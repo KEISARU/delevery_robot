@@ -1,212 +1,190 @@
-#include <PID_v1.h>
-#define MotEnable 3 //пин регулировки скорости мотора
-#define MotFwd  5  // пин мотор вперед
-#define MotRev  6 // пин мотор назад
-#define encoderPin1 18 // пины энкодера
-#define encoderPin2 19
 
-#include <DigiPotX9Cxxx.h>// потенциометр
+//libraries
+  #include <PID_v1.h>
+  #include <DigiPotX9Cxxx.h>// потенциометр
+  #include <ros.h>
+  #include <geometry_msgs/Twist.h>
+  #include "GyverEncoder.h"
+  
+//pins
+  #define MotEnable 3 //пин регулировки скорости мотора
+  #define MotFwd  5  // пин мотор вперед
+  #define MotRev  6 // пин мотор назад
+  #define encoderPin1 18
+  #define encoderPin2 19
+  #define crashSensor 2
 
-#include <ros.h> // 
-#include <geometry_msgs/Twist.h>//
-
-
-
-int speedForward = 20; // 0 макс скорость вперед
-int speedBackward = 70; // 99 макс скорость назад
-int speedStop = 45;// стоп!
-
-DigiPot pot(8,9,10);// пины потенциометра
-
-
-int User_Input = 0; // то самое значения угла поворта
-int crashSensor = 2; // Датчик касания
-
-
-volatile int lastEncoded = 0; // для обновления значения энкодера
-volatile long encoderValue = 0; // 
-
-
-
-bool flagForRotateMotor = false;
-
-double kp = 5 , ki = 1 , kd = 0.009;             // PID, коэф для подсчета нужного угла. Там интергалы, все дела
-double input = 0, output = 0, setpoint = 0; 
-PID myPID(&input, &output, &setpoint, kp, ki, kd, DIRECT);  //
-
-
-
-void onTwist(const geometry_msgs::Twist& msg)//
-{
-  //forward
-  if(msg.linear.x > 0)
-  {
+//variables
+  //Serial
+    String readString; //для ввода числа в консоль ардуино - пока не используется
     
-      pot.set(speedForward);//кнопка u .отправляем на потенциометр значение чтоб ехал вперед
+  //encoder
     
-  }
-  //backward
-  else if(msg.linear.x < 0)
-  {
-     
-      pot.set(speedBackward); // кнопка m, назад
+    volatile long encoderValue = 0; // 
+    void updateEncoder();
+  //PID
+    double kp = 5 , ki = 1 , kd = 0.009;             // PID, коэф для подсчета нужного угла. Там интергалы, все дела - 
+    double input = 0, output = 0, setpoint = 0;      //#коэффициенты не используются из за введения константы +-80
     
-  }
-  //right
-  else if(msg.angular.z < 0)//Для поворота на право
-  {
-    if(User_Input >= 0)//делаем так, чтобы он не крутился за нулевую позицию энокдера, ограничиваем угол поворота мотора
-    {
-      User_Input-= 1;
-    }
-    else
-    {
-      User_Input = 0;
-    }
-  }
+  //crashSensor
+    bool flagForRotateMotor = false;
 
-  else if(msg.angular.z > 0)// тоже самое что и выше, но за позицию 34. Их всего 34
-  {
-    if(User_Input <= 34)//
-    {
-      User_Input+= 1;
-    }
-    else
-    {
-      User_Input = 34;
-    }
-  }
-  else 
-  {
-   pot.set(speedStop); // кнопка к. остновка заднего привода
-  }
-}
+  //rear wheels
+    int speedForward = 20; // 0 макс скорость вперед
+    int speedBackward = 70; // 99 макс скорость назад
+    int speedStop = 45;// стоп!
+    
+  //front wheels
+    int User_Input = 0; // то самое значения угла поворта - не понятно, зачем нужна.
+    void clockwise();
+    void counterclockwise();
+    void stop_motor();
+    
+//external classes
+  DigiPot pot(8,9,10);// пины потенциометра
+  PID myPID(&input, &output, &setpoint, kp, ki, kd, DIRECT);
+  Encoder enc1(encoderPin1, encoderPin2);
 
-ros::Subscriber<geometry_msgs::Twist> sub("cmd_vel",onTwist); //
-
-ros::NodeHandle nh;//
+//ros initialisation
+  void onTwist(const geometry_msgs::Twist& msg);
+  ros::Subscriber<geometry_msgs::Twist> sub("cmd_vel",onTwist); 
+  ros::NodeHandle nh;
 
 void setup() {
-  pinMode(MotEnable, OUTPUT); // передний привод
-  pinMode(MotFwd, OUTPUT); 
-  pinMode(MotRev, OUTPUT); 
-  Serial.begin(9600); //открываем пины мотора
-
-  pinMode(encoderPin1, INPUT_PULLUP); 
-  pinMode(encoderPin2, INPUT_PULLUP); // пин энкодера 
-
-  digitalWrite(encoderPin1, HIGH); //
-  digitalWrite(encoderPin2, HIGH); //включаем энкодер
-
-  //
-  //
-  attachInterrupt(0, updateEncoder, CHANGE); 
-  attachInterrupt(1, updateEncoder, CHANGE);
-
-  
-
+  //start serial
+    Serial.begin(9600); 
     
-  TCCR1B = TCCR1B & 0b11111000 | 1;  // set 31KHz PWM to prevent motor noise
-  myPID.SetMode(AUTOMATIC);   // ставим автомат на пид контроль.
-  myPID.SetSampleTime(1);  // таймер обновления расчетов
-  myPID.SetOutputLimits(-125, 125); // ограничиваем скорость мотора
-  nh.initNode();
-  nh.subscribe(sub);
+  //front wheels motor setup
+    pinMode(MotEnable, OUTPUT);
+    pinMode(MotFwd, OUTPUT); 
+    pinMode(MotRev, OUTPUT); 
+    
+ 
+  //attach encoder to interrupt service
+    attachInterrupt(4, updateEncoder, CHANGE); 
+    attachInterrupt(5, updateEncoder, CHANGE);
+    
+
+
+  //PID
+    myPID.SetMode(AUTOMATIC);   //set PID in Auto mode
+    myPID.SetSampleTime(1);  // refresh rate of PID controller
+    myPID.SetOutputLimits(-125, 125); // this is the MAX PWM value to move motor, here change in value reflect change in speed of motor.
+
+  //ros setup
+    nh.initNode();
+    nh.subscribe(sub);
 }
 
 void loop() {
-  // put your main code here, to run repeatedly:
-  nh.spinOnce();
+  enc1.tick();
+  //ROS loop
+    nh.spinOnce();
 
-  // вращаем мотор пока не коснется датчика
-
-    while(!flagForRotateMotor) // мотор вращается пока этот флаг false
-  {
-    int buttonState = digitalRead(crashSensor); // Датчик касания
-    //Serial.println(buttonState);
-    if(buttonState == 1) // если сработала кнопка дачика
+  //rotate motor untill button is clicked
+    while(!flagForRotateMotor) 
     {
-    digitalWrite(MotFwd  , HIGH);  // Устанавливаем логический 0 на входе драйвера L_PWM, значит на выходе драйвера M- будет установлен потенциал S-
-    digitalWrite(MotRev , LOW);  // Устанавливаем логическую 1 на входе драйвера R_PWM, значит на выходе драйвера M+ будет установлен потенциал S+
-    analogWrite (MotEnable,   127); 
-    }else
-    {
-      // останавливаем передний привод. Все значения обнуляем. Теперь эта точка нулевая.
-      digitalWrite(MotFwd, LOW);  // Устанавливаем логический 0 на входе драйвера L_PWM, значит на выходе драйвера M- будет установлен потенциал S-
-      digitalWrite(MotRev, LOW);  // Устанавливаем логическую 0 на входе драйвера R_PWM, значит на выходе драйвера M+ будет установлен потенциал S-
-      analogWrite (MotEnable,    0); 
-      flagForRotateMotor = true; // меням флаг на  true, тем самым выходим из цикла
+      if(digitalRead(crashSensor)) 
+      {
       
-      User_Input = 0; // устанавливаем значение угла энкодера на ноль, теперь нулевое положение будет, там, где датчик касания
-      encoderValue = 0;
+        clockwise(127);
+      }
+      else
+      {
+        
+        stop_motor();
+        flagForRotateMotor = true; // меням флаг на  true, тем самым выходим из цикла
+        User_Input = 0; // устанавливаем значение угла энкодера на ноль, теперь нулевое положение будет, там, где датчик касания
+        encoderValue = 0;
     } 
   }
-
-
   
-  
-              
-
-  setpoint = User_Input;                    //вычисление угла
-  input = encoderValue ;           // 
-
-  myPID.Compute(); 
-  //ограничиваем скорость мотора. Иначе он не вращает если скорость ниже 80 или -80.
-  if (output< 0 && output > -80)
-  {
-    output = -80;
-    if(User_Input == encoderValue)
-        output = 0; // ставлю скорость на ноль, чтобы остановился
-  }
-  if( output> 0 && output < 80)
-  {
-    output = 80;
-    if(User_Input == encoderValue)
-        output = 0;
-  }
-  //
-  pwmOut(output); 
-  
+    Serial.print("this is UI - "); 
+Serial.println(User_Input);
+    setpoint = User_Input; 
+    input = encoderValue ; 
+     Serial.print("encoderValue - ");
+ Serial.println(encoderValue);// 
+    myPID.Compute(); 
+    pwmOut(output);
+    
 }
+
+//front wheels motor - поменяйте название, если не направления не соответствуют
+  void clockwise (int angular_speed) 
+  {
+    digitalWrite(MotFwd, HIGH); 
+    digitalWrite(MotRev, LOW); 
+    analogWrite(MotEnable,angular_speed);
+  }
+  void counterclockwise (int angular_speed) 
+  {
+    digitalWrite(MotFwd, LOW); 
+    digitalWrite(MotRev, HIGH); 
+    analogWrite(MotEnable,angular_speed);
+  }
+  void stop_motor(){
+    digitalWrite(MotFwd, LOW);  // Устанавливаем логический 0 на входе драйвера L_PWM, значит на выходе драйвера M- будет установлен потенциал S-
+    digitalWrite(MotRev, LOW);  // Устанавливаем логическую 1 на входе драйвера R_PWM, значит на выходе драйвера M+ будет установлен потенциал S+
+    analogWrite (MotEnable,    0); 
+  }
+  
 void pwmOut(int out) 
 {                               
   if (out > 0) 
-  {                         // включаем мотор вперед, назад, взависимости от указанного значения. Передний привод   
-    analogWrite(MotEnable, out);         // 
-    reverse();// 
+  {                         
+    clockwise(out);
   }
   else 
   {
-    analogWrite(MotEnable, abs(out));          //                       
-    forward();                            // 
+    
+    counterclockwise(-out);// 
   }
 }
 
-// фунция прерывания, она работает всегда, в любой момент времени. Она делает так, чтобы экнкодер считал каждый поворот, а не через два.
-void updateEncoder()
+// фунция прерывания, не сработала корректно для моего энкодера.
+void updateEncoder() 
 {
-  int MSB = digitalRead(encoderPin1); //MSB = most significant bit
-  int LSB = digitalRead(encoderPin2); //LSB = least significant bit
 
-  int encoded = (MSB << 1) |LSB; //converting the 2 pin value to single number
-  int sum  = (lastEncoded << 2) | encoded; //adding it to the previous encoded value
-
-  if(sum == 0b1101 || sum == 0b0100 || sum == 0b0010 || sum == 0b1011) encoderValue ++;
-  if(sum == 0b1110 || sum == 0b0111 || sum == 0b0001 || sum == 0b1000) encoderValue --;
-
-  lastEncoded = encoded; //store this value for next time
-
+  if(enc1.isTurn())
+  {
+    if (enc1.isRight())
+    { 
+    encoderValue++;  
+    
+    }   
+  
+  if (enc1.isLeft())
+    {
+    encoderValue--;
+    }
+  }
 }
 
-// функции для мотора, чтоб проще было
-void forward () 
-{
-  digitalWrite(MotFwd, HIGH); 
-  digitalWrite(MotRev, LOW); 
-}
 
-void reverse () 
+//ros callback function 
+//в качестве сигнала на задние колеса подаются константы, что не дает возможности контролировать скорость
+void onTwist(const geometry_msgs::Twist& msg)
 {
-  digitalWrite(MotFwd, LOW); 
-  digitalWrite(MotRev, HIGH); 
+  //forward
+  if(msg.linear.x > 0) pot.set(speedForward);
+  
+  //backward
+  else if(msg.linear.x < 0) pot.set(speedBackward); 
+  
+  //right 
+  // Разве число доступных оборотов энкодера не меньше чем 34?
+  else if(msg.angular.z < 0)
+  {
+    if(User_Input >=0 && User_Input <=34) User_Input-= 1;
+    
+  }
+
+  else if(msg.angular.z > 0)
+  {
+    if(User_Input >=0 && User_Input <=34) User_Input+= 1;
+    
+  }
+  else pot.set(speedStop);
+ 
 }
