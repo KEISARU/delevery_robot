@@ -9,6 +9,7 @@ INSTRUCTION:
 3. INSTALL ROSBRIDGE - https://wiki.ros.org/rosbridge_suite/Tutorials/RunningRosbridge
 
 4.Start the ROS Master - roscore
+
 5.Run rosserial client on the machine - rosrun rosserial_python serial_node.py /dev/tty<USB# or ACM#>
 
 6.Run rosbridge - roslaunch rosbridge_server rosbridge_websocket.launch
