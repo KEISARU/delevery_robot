@@ -1,13 +1,25 @@
-
 #include <PID_v1.h>
 #define MotEnable 3 //пин регулировки скорости мотора
 #define MotFwd  5  // пин мотор вперед
 #define MotRev  6 // пин мотор назад
 
-                      
+#include <DigiPotX9Cxxx.h>// потенциометр
+
+#include <ros.h>
+#include <geometry_msgs/Twist.h>
+
+
+
+int speedForward = 20; // 0 макс скорость вперед
+int speedBackward = 70; // 99 макс скорость назад
+int speedStop = 45;// стоп!
+
+DigiPot pot(8,9,10);// пины потенциометра
+
 String readString; //для ввода числа в консоль ардуино
 int User_Input = 0; // то самое значения угла поворта
 int crashSensor = 2; // Датчик касания
+
 
 int encoderPin1 = 18; //
 int encoderPin2 = 19; //пины энокодра
@@ -21,12 +33,48 @@ int lastLSB = 0;
 
 bool flagForRotateMotor = false;
 
-double kp = 5 , ki = 1 , kd = 0.01;             // PID, коэф для подсчета нужного угла. Там интергалы, все дела
+double kp = 5 , ki = 1 , kd = 0.009;             // PID, коэф для подсчета нужного угла. Там интергалы, все дела
 double input = 0, output = 0, setpoint = 0;
 PID myPID(&input, &output, &setpoint, kp, ki, kd, DIRECT);  
 
 
 
+void onTwist(const geometry_msgs::Twist& msg)
+{
+  //forward
+  if(msg.linear.x > 0)
+  {
+    
+      pot.set(speedForward);
+    
+  }
+  //backward
+  else if(msg.linear.x < 0)
+  {
+     
+      pot.set(speedBackward); 
+    
+  }
+  //right
+  else if(msg.angular.z < 0)
+  {
+    User_Input = 36;
+    
+  }
+
+  else if(msg.angular.z > 0)
+  {
+    User_Input = 0;
+  }
+  else 
+  {
+   pot.set(speedStop);
+  }
+}
+
+ros::Subscriber<geometry_msgs::Twist> sub("cmd_vel",onTwist); 
+
+ros::NodeHandle nh;
 
 void setup() {
   pinMode(MotEnable, OUTPUT);
@@ -45,6 +93,21 @@ void setup() {
   attachInterrupt(0, updateEncoder, CHANGE); 
   attachInterrupt(1, updateEncoder, CHANGE);
 
+  
+
+    
+  TCCR1B = TCCR1B & 0b11111000 | 1;  // set 31KHz PWM to prevent motor noise
+  myPID.SetMode(AUTOMATIC);   //set PID in Auto mode
+  myPID.SetSampleTime(1);  // refresh rate of PID controller
+  myPID.SetOutputLimits(-125, 125); // this is the MAX PWM value to move motor, here change in value reflect change in speed of motor.
+  nh.initNode();
+  nh.subscribe(sub);
+}
+
+void loop() {
+  // put your main code here, to run repeatedly:
+  nh.spinOnce();
+
   // вращаем мотор пока не коснется датчика
 
     while(!flagForRotateMotor) // мотор вращается пока этот флаг false
@@ -55,7 +118,7 @@ void setup() {
     {
     digitalWrite(MotFwd  , HIGH);  // Устанавливаем логический 0 на входе драйвера L_PWM, значит на выходе драйвера M- будет установлен потенциал S-
     digitalWrite(MotRev , LOW);  // Устанавливаем логическую 1 на входе драйвера R_PWM, значит на выходе драйвера M+ будет установлен потенциал S+
-    analogWrite (MotEnable,  255 ); 
+    analogWrite (MotEnable,   127); 
     }else{
 
       digitalWrite(MotFwd, LOW);  // Устанавливаем логический 0 на входе драйвера L_PWM, значит на выходе драйвера M- будет установлен потенциал S-
@@ -64,17 +127,10 @@ void setup() {
       flagForRotateMotor = true; // меням флаг на  true, тем самым выходим из цикла
       
       User_Input = 0; // устанавливаем значение угла энкодера на ноль, теперь нулевое положение будет, там, где датчик касания
+      encoderValue = 0;
     } 
   }
 
-    
-  TCCR1B = TCCR1B & 0b11111000 | 1;  // set 31KHz PWM to prevent motor noise
-  myPID.SetMode(AUTOMATIC);   //set PID in Auto mode
-  myPID.SetSampleTime(1);  // refresh rate of PID controller
-  myPID.SetOutputLimits(-125, 125); // this is the MAX PWM value to move motor, here change in value reflect change in speed of motor.
-}
-
-void loop() {
   while (Serial.available()) { // выводим значения экнодера в терминал (сериал принт)
     delay(3);                  // 
     char c = Serial.read();  // 
@@ -83,8 +139,8 @@ void loop() {
  
   if (readString.length() >0) {
   
-   Serial.println(readString.toInt());  //printing the input data in integer form
-    User_Input = readString.toInt();   // here input data is store in integer form
+   //Serial.println(readString.toInt());  //printing the input data in integer form
+   // User_Input = readString.toInt();   // here input data is store in integer form
     
   }
 
@@ -98,28 +154,40 @@ setpoint = REV;                    //вычисление угла
   input = encoderValue ;           // 
  Serial.print("encoderValue - ");
  Serial.println(encoderValue);
-  myPID.Compute();                 // 
-  pwmOut(output);  
+  myPID.Compute(); 
+  Serial.print("output- ");
+ Serial.println(output);
+  if (output< 0 && output > -80)
+  {
+  output = -80;
+    if(REV == encoderValue)
+      output = 0;
+  }
+  if( output> 0 && output < 80)
+  {
+    output = 80;
+  if(REV == encoderValue)
+      output = 0;
+  }
+  pwmOut(output); 
+  
 }
 void pwmOut(int out) {                               
   if (out > 0) {                         // включаем мотор вперед, назад, взависимости от указанного значения   
     analogWrite(MotEnable, out);         // 
-    forward();                           // 
+    
+    reverse();// 
   }
   else {
     analogWrite(MotEnable, abs(out));          //                       
-    reverse();                            // 
+    forward();                            // 
   
   
   readString=""; // для инпута
 
 
 }
-
-
- 
 }
-
 
 // фунция прерывания, она работает всегда, в любой момент времени. Она делает так, чтобы экнкодер считал каждый поворот, а не через два.
 void updateEncoder(){
